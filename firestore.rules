@@ -1,0 +1,2305 @@
+rules_version = '2';
+
+service cloud.firestore {
+  match /databases/{database}/documents {
+    function signedIn() {
+      return request.auth != null;
+    }
+
+    function hasCurrentRole() {
+      return signedIn() && hasSignedInCurrentRole();
+    }
+
+    function hasSignedInCurrentRole() {
+      let profilePath = /databases/$(database)/documents/users/$(request.auth.uid);
+      let profile = get(profilePath).data;
+      return profile.uid == request.auth.uid
+        && request.auth.token.role in ['admin', 'dentist']
+        && validDentistId(request.auth.token.dentistId)
+        && profile.role == request.auth.token.role
+        && profile.dentistId == request.auth.token.dentistId;
+    }
+
+    function isAdmin() {
+      return hasCurrentRole();
+    }
+
+    function isProfessional() {
+      return hasCurrentRole();
+    }
+
+    function validDentistId(dentistId) {
+      return dentistId in ['blas-fresia', 'pamela-moreira', 'marcela-castro'];
+    }
+
+    function profileMatches(uid, dentistId) {
+      let profilePath = /databases/$(database)/documents/users/$(uid);
+      let profile = get(profilePath).data;
+      return profile.uid == uid
+        && profile.dentistId == dentistId
+        && profile.role in ['admin', 'dentist'];
+    }
+
+    function professionalUserProfile() {
+      return isProfessional()
+        && resource.data.dentistId in [
+          'blas-fresia',
+          'pamela-moreira',
+          'marcela-castro'
+        ]
+        && resource.data.role in ['admin', 'dentist'];
+    }
+
+    function validClinicInterval(interval) {
+      return interval.keys().hasOnly(['start', 'end'])
+        && interval.keys().size() == 2
+        && interval.start.matches('^(09|1[0-9]|20):[03]0$')
+        && interval.end.matches('^(09:30|1[0-9]:[03]0|20:[03]0|21:00)$')
+        && interval.start < interval.end;
+    }
+
+    function validClinicIntervalList(intervals) {
+      return intervals is list
+        && intervals.size() <= 8
+        && (intervals.size() < 1 || validClinicInterval(intervals[0]))
+        && (intervals.size() < 2 || (
+          validClinicInterval(intervals[1])
+          && intervals[0].end <= intervals[1].start
+        ))
+        && (intervals.size() < 3 || (
+          validClinicInterval(intervals[2])
+          && intervals[1].end <= intervals[2].start
+        ))
+        && (intervals.size() < 4 || (
+          validClinicInterval(intervals[3])
+          && intervals[2].end <= intervals[3].start
+        ))
+        && (intervals.size() < 5 || (
+          validClinicInterval(intervals[4])
+          && intervals[3].end <= intervals[4].start
+        ))
+        && (intervals.size() < 6 || (
+          validClinicInterval(intervals[5])
+          && intervals[4].end <= intervals[5].start
+        ))
+        && (intervals.size() < 7 || (
+          validClinicInterval(intervals[6])
+          && intervals[5].end <= intervals[6].start
+        ))
+        && (intervals.size() < 8 || (
+          validClinicInterval(intervals[7])
+          && intervals[6].end <= intervals[7].start
+        ));
+    }
+
+    function validSchedule(dentistId) {
+      let schedule = request.resource.data;
+      return validDentistId(dentistId)
+        && schedule.keys().hasOnly([
+          'dentistId',
+          'professionalUid',
+          'timezone',
+          'weeklyAvailability',
+          'defaultDurationMinutes',
+          'durationOptions',
+          'exceptions',
+          'exceptionsByDate',
+          'updatedAt',
+          'updatedBy'
+        ])
+        && schedule.keys().size() == 10
+        && schedule.dentistId == dentistId
+        && schedule.professionalUid is string
+        && profileMatches(schedule.professionalUid, dentistId)
+        && schedule.timezone == 'America/Argentina/Tucuman'
+        && schedule.weeklyAvailability is map
+        && schedule.weeklyAvailability.keys().hasOnly(['1', '2', '3', '4', '5', '6', '7'])
+        && schedule.weeklyAvailability.keys().size() == 7
+        && validClinicIntervalList(schedule.weeklyAvailability['1'])
+        && validClinicIntervalList(schedule.weeklyAvailability['2'])
+        && validClinicIntervalList(schedule.weeklyAvailability['3'])
+        && validClinicIntervalList(schedule.weeklyAvailability['4'])
+        && validClinicIntervalList(schedule.weeklyAvailability['5'])
+        && validClinicIntervalList(schedule.weeklyAvailability['6'])
+        && validClinicIntervalList(schedule.weeklyAvailability['7'])
+        && schedule.defaultDurationMinutes == 30
+        && schedule.durationOptions == [30]
+        && schedule.exceptions is list
+        && schedule.exceptions.size() <= 100
+        && schedule.exceptionsByDate is map
+        && schedule.exceptionsByDate.size() <= 100
+        && schedule.updatedAt == request.time
+        && schedule.updatedBy == request.auth.uid;
+    }
+
+    function weekdayForDate(dateValue) {
+      let yearValue = int(dateValue[0:4]);
+      let monthValue = int(dateValue[5:7]);
+      let dayValue = int(dateValue[8:10]);
+      let yearAdjusted = monthValue < 3 ? yearValue - 1 : yearValue;
+      let monthAdjusted = monthValue < 3 ? monthValue + 12 : monthValue;
+      let zeller = (
+        dayValue
+        + int((13 * (monthAdjusted + 1)) / 5)
+        + yearAdjusted
+        + int(yearAdjusted / 4)
+        - int(yearAdjusted / 100)
+        + int(yearAdjusted / 400)
+      ) % 7;
+      return ((zeller + 5) % 7) + 1;
+    }
+
+    function appointmentFitsIntervals(intervals, startTime, endTime) {
+      return intervals is list
+        && (
+          (intervals.size() > 0 && startTime >= intervals[0].start && endTime <= intervals[0].end)
+          || (intervals.size() > 1 && startTime >= intervals[1].start && endTime <= intervals[1].end)
+          || (intervals.size() > 2 && startTime >= intervals[2].start && endTime <= intervals[2].end)
+          || (intervals.size() > 3 && startTime >= intervals[3].start && endTime <= intervals[3].end)
+          || (intervals.size() > 4 && startTime >= intervals[4].start && endTime <= intervals[4].end)
+          || (intervals.size() > 5 && startTime >= intervals[5].start && endTime <= intervals[5].end)
+          || (intervals.size() > 6 && startTime >= intervals[6].start && endTime <= intervals[6].end)
+          || (intervals.size() > 7 && startTime >= intervals[7].start && endTime <= intervals[7].end)
+        );
+    }
+
+    function appointmentMatchesSchedule(appointment, weekday) {
+      let schedulePath = /databases/$(database)/documents/schedules/$(appointment.dentistId);
+      let scheduleExists = exists(schedulePath);
+      let schedule = scheduleExists ? get(schedulePath).data : {};
+      let weekdayKey = string(weekday);
+      let exceptions = schedule.get('exceptionsByDate', {});
+      let hasDateException = exceptions is map
+        && exceptions.keys().hasAny([appointment.localDate]);
+      let intervals = hasDateException
+        ? exceptions[appointment.localDate]
+        : (scheduleExists
+          ? schedule.weeklyAvailability.get(weekdayKey, [])
+          : (weekdayKey in ['1', '2', '3', '4', '5']
+            ? [{'start': '09:00', 'end': '21:00'}]
+            : []));
+      let unresolvedLegacyExceptions = scheduleExists
+        && schedule.exceptions is list
+        && schedule.exceptions.size() > 0
+        && !schedule.keys().hasAny(['exceptionsByDate']);
+      return !unresolvedLegacyExceptions
+        && appointmentFitsIntervals(intervals, appointment.startTime, appointment.endTime);
+    }
+
+    function validNewAppointmentWindow(appointment) {
+      let weekday = weekdayForDate(appointment.localDate);
+      return appointment.durationMinutes == 30
+        && appointment.startMinute >= 540
+        && appointment.endMinute <= 1260
+        && appointment.startMinute % 30 == 0
+        && weekday <= 5
+        && appointmentMatchesSchedule(appointment, weekday);
+    }
+
+    function appointmentBookingUnchanged() {
+      return request.resource.data.patientId == resource.data.patientId
+        && request.resource.data.dentistId == resource.data.dentistId
+        && request.resource.data.professionalUid == resource.data.professionalUid
+        && request.resource.data.localDate == resource.data.localDate
+        && request.resource.data.startTime == resource.data.startTime
+        && request.resource.data.endTime == resource.data.endTime
+        && request.resource.data.startMinute == resource.data.startMinute
+        && request.resource.data.endMinute == resource.data.endMinute
+        && request.resource.data.startAt == resource.data.startAt
+        && request.resource.data.endAt == resource.data.endAt
+        && request.resource.data.durationMinutes == resource.data.durationMinutes
+        && request.resource.data.slotIds == resource.data.slotIds;
+    }
+
+    function reservationPath(slotId) {
+      return /databases/$(database)/documents/appointmentReservations/$(slotId);
+    }
+
+    function appointmentPath(appointmentId) {
+      return /databases/$(database)/documents/appointments/$(appointmentId);
+    }
+
+    function scheduleBlockPath(blockId) {
+      return /databases/$(database)/documents/scheduleBlocks/$(blockId);
+    }
+
+    function validClinicalProfessional(uid) {
+      let profilePath = /databases/$(database)/documents/users/$(uid);
+      return exists(profilePath)
+        && get(profilePath).data.uid == uid
+        && get(profilePath).data.role in ['admin', 'dentist']
+        && validDentistId(get(profilePath).data.dentistId);
+    }
+
+    function validMedicalHistory(history) {
+      return history is map
+        && history.keys().hasOnly([
+          'diseases',
+          'allergies',
+          'medication',
+          'medicalBackground',
+          'dentalBackground',
+          'generalNotes'
+        ])
+        && history.keys().hasAll([
+          'diseases',
+          'allergies',
+          'medication',
+          'medicalBackground',
+          'dentalBackground',
+          'generalNotes'
+        ])
+        && validMedicalHistoryEntry(history.diseases)
+        && validMedicalHistoryEntry(history.allergies)
+        && validMedicalHistoryEntry(history.medication)
+        && validMedicalHistoryEntry(history.medicalBackground)
+        && validMedicalHistoryEntry(history.dentalBackground)
+        && validMedicalHistoryEntry(history.generalNotes);
+    }
+
+    function validMedicalHistoryEntry(entry) {
+      return entry is map
+        && entry.keys().hasOnly(['status', 'details'])
+        && entry.keys().hasAll(['status', 'details'])
+        && entry.status in ['pending', 'none_declared', 'recorded']
+        && entry.details is string
+        && entry.details.size() <= 2000
+        && (
+          (entry.status == 'recorded' && entry.details.size() > 0)
+          || (entry.status != 'recorded' && entry.details == '')
+        );
+    }
+
+    function validMedicalRecord(patientId) {
+      let record = request.resource.data;
+      return record.keys().hasOnly([
+          'patientId',
+          'medicalHistory',
+          'auditLogId',
+          'createdAt',
+          'createdBy',
+          'updatedAt',
+          'updatedBy'
+        ])
+        && record.keys().hasAll([
+          'patientId',
+          'medicalHistory',
+          'auditLogId',
+          'createdAt',
+          'createdBy',
+          'updatedAt',
+          'updatedBy'
+        ])
+        && record.patientId == patientId
+        && exists(/databases/$(database)/documents/patients/$(patientId))
+        && validMedicalHistory(record.medicalHistory)
+        && record.auditLogId is string
+        && record.auditLogId.size() > 0
+        && record.createdAt is timestamp
+        && record.createdBy is string
+        && record.updatedAt == request.time
+        && record.updatedBy == request.auth.uid;
+    }
+
+    function validConsultation(patientId, consultationId) {
+      let consultation = request.resource.data;
+      return consultation.keys().hasOnly([
+          'appointmentId',
+          'professionalUid',
+          'consultationDate',
+          'reason',
+          'diagnosis',
+          'clinicalNotes',
+          'treatmentIndicated',
+          'treatmentPerformed',
+          'recommendations',
+          'nextControl',
+          'createdAt',
+          'createdBy',
+          'updatedAt',
+          'updatedBy',
+          'auditLogId'
+        ])
+        && consultation.keys().hasAll([
+          'appointmentId',
+          'professionalUid',
+          'consultationDate',
+          'reason',
+          'diagnosis',
+          'clinicalNotes',
+          'treatmentIndicated',
+          'treatmentPerformed',
+          'recommendations',
+          'nextControl',
+          'createdAt',
+          'createdBy',
+          'updatedAt',
+          'updatedBy',
+          'auditLogId'
+        ])
+        && exists(/databases/$(database)/documents/patients/$(patientId))
+        && consultation.professionalUid is string
+        && validClinicalProfessional(consultation.professionalUid)
+        && consultation.consultationDate is timestamp
+        && consultation.reason is string
+        && consultation.reason.size() > 0
+        && consultation.reason.size() <= 1000
+        && consultation.diagnosis is string
+        && consultation.diagnosis.size() > 0
+        && consultation.diagnosis.size() <= 4000
+        && consultation.clinicalNotes is string
+        && consultation.clinicalNotes.size() <= 4000
+        && consultation.treatmentIndicated is string
+        && consultation.treatmentIndicated.size() <= 4000
+        && consultation.treatmentPerformed is string
+        && consultation.treatmentPerformed.size() <= 4000
+        && consultation.recommendations is string
+        && consultation.recommendations.size() <= 4000
+        && (
+          consultation.nextControl == null
+          || consultation.nextControl is timestamp
+        )
+        && (
+          consultation.appointmentId == null
+          || (
+            consultation.appointmentId is string
+            && consultation.appointmentId.matches('^[^/]{1,150}$')
+            && consultationId == 'appointment-' + consultation.appointmentId
+            && exists(appointmentPath(consultation.appointmentId))
+            && get(appointmentPath(consultation.appointmentId)).data.patientId == patientId
+          )
+        )
+        && consultation.createdAt is timestamp
+        && consultation.createdBy is string
+        && consultation.updatedAt == request.time
+        && consultation.updatedBy == request.auth.uid
+        && consultation.auditLogId is string;
+    }
+
+    function validTreatment(patientId) {
+      let treatment = request.resource.data;
+      return treatment.keys().hasOnly([
+          'name',
+          'planDescription',
+          'status',
+          'professionalUid',
+          'createdAt',
+          'createdBy',
+          'updatedAt',
+          'updatedBy',
+          'auditLogId'
+        ])
+        && treatment.keys().hasAll([
+          'name',
+          'planDescription',
+          'status',
+          'professionalUid',
+          'createdAt',
+          'createdBy',
+          'updatedAt',
+          'updatedBy',
+          'auditLogId'
+        ])
+        && exists(/databases/$(database)/documents/patients/$(patientId))
+        && treatment.name is string
+        && treatment.name.size() > 0
+        && treatment.name.size() <= 160
+        && treatment.planDescription is string
+        && treatment.planDescription.size() > 0
+        && treatment.planDescription.size() <= 4000
+        && treatment.status in ['planned', 'in_progress', 'completed', 'cancelled']
+        && treatment.professionalUid is string
+        && validClinicalProfessional(treatment.professionalUid)
+        && treatment.createdAt is timestamp
+        && treatment.createdBy is string
+        && treatment.updatedAt == request.time
+        && treatment.updatedBy == request.auth.uid
+        && treatment.auditLogId is string;
+    }
+
+    function validTreatmentEvolution(patientId, treatmentId) {
+      let evolution = request.resource.data;
+      return evolution.keys().hasOnly([
+          'date',
+          'professionalUid',
+          'procedureDescription',
+          'evolution',
+          'notes',
+          'status',
+          'createdAt',
+          'createdBy',
+          'auditLogId'
+        ])
+        && evolution.keys().hasAll([
+          'date',
+          'professionalUid',
+          'procedureDescription',
+          'evolution',
+          'notes',
+          'status',
+          'createdAt',
+          'createdBy',
+          'auditLogId'
+        ])
+        && exists(/databases/$(database)/documents/patients/$(patientId))
+        && exists(/databases/$(database)/documents/medicalRecords/$(patientId)/treatments/$(treatmentId))
+        && evolution.date is timestamp
+        && evolution.professionalUid is string
+        && validClinicalProfessional(evolution.professionalUid)
+        && evolution.procedureDescription is string
+        && evolution.procedureDescription.size() > 0
+        && evolution.procedureDescription.size() <= 2000
+        && evolution.evolution is string
+        && evolution.evolution.size() > 0
+        && evolution.evolution.size() <= 4000
+        && evolution.notes is string
+        && evolution.notes.size() <= 2000
+        && evolution.status in ['planned', 'in_progress', 'completed', 'cancelled']
+        && evolution.createdAt == request.time
+        && evolution.createdBy == request.auth.uid
+        && evolution.auditLogId is string;
+    }
+
+    function timeForMinute(minute) {
+      let hours = int(minute / 60);
+      let minutes = minute % 60;
+      return (hours < 10 ? '0' + string(hours) : string(hours))
+        + ':'
+        + (minutes < 10 ? '0' + string(minutes) : string(minutes));
+    }
+
+    function timestampMatchesLocalMinute(timestampValue, dateValue, minuteValue) {
+      let parts = dateValue.split('-');
+      let localTimestamp = timestampValue + duration.value(3, 'h');
+      return minuteValue >= 0
+        && minuteValue < 1440
+        && parts.size() == 3
+        && localTimestamp.year() == int(parts[0])
+        && localTimestamp.month() == int(parts[1])
+        && localTimestamp.day() == int(parts[2])
+        && localTimestamp.hours() * 60 + localTimestamp.minutes() == minuteValue
+        && localTimestamp.seconds() == 0
+        && localTimestamp.nanos() == 0;
+    }
+
+    function appointmentReservationMatches(appointmentId, appointment, index) {
+      let slotId = appointment.slotIds[index];
+      let reservationPathValue = reservationPath(slotId);
+      let reservation = getAfter(reservationPathValue).data;
+      return existsAfter(reservationPathValue)
+        && slotId == appointment.dentistId + '_'
+          + appointment.localDate + '_' + string(appointment.startMinute + index * 15)
+        && reservation.slotId == slotId
+        && reservation.slotMinute == appointment.startMinute + index * 15
+        && reservation.ownerId == appointmentId
+        && reservation.ownerType == 'appointment'
+        && reservation.dentistId == appointment.dentistId
+        && reservation.date == appointment.localDate;
+    }
+
+    function validAppointmentReservations(appointmentId, appointment) {
+      let slots = appointment.slotIds;
+      return slots is list
+        && slots.size() > 0
+        && slots.size() <= 8
+        && slots.size() == appointment.durationMinutes / 15
+        && (slots.size() < 1 || appointmentReservationMatches(appointmentId, appointment, 0))
+        && (slots.size() < 2 || appointmentReservationMatches(appointmentId, appointment, 1))
+        && (slots.size() < 3 || appointmentReservationMatches(appointmentId, appointment, 2))
+        && (slots.size() < 4 || appointmentReservationMatches(appointmentId, appointment, 3))
+        && (slots.size() < 5 || appointmentReservationMatches(appointmentId, appointment, 4))
+        && (slots.size() < 6 || appointmentReservationMatches(appointmentId, appointment, 5))
+        && (slots.size() < 7 || appointmentReservationMatches(appointmentId, appointment, 6))
+        && (slots.size() < 8 || appointmentReservationMatches(appointmentId, appointment, 7));
+    }
+
+    function appointmentReservationsRemoved(appointment) {
+      let slots = appointment.slotIds;
+      return slots is list
+        && slots.size() > 0
+        && slots.size() <= 8
+        && (slots.size() < 1 || !existsAfter(reservationPath(slots[0])))
+        && (slots.size() < 2 || !existsAfter(reservationPath(slots[1])))
+        && (slots.size() < 3 || !existsAfter(reservationPath(slots[2])))
+        && (slots.size() < 4 || !existsAfter(reservationPath(slots[3])))
+        && (slots.size() < 5 || !existsAfter(reservationPath(slots[4])))
+        && (slots.size() < 6 || !existsAfter(reservationPath(slots[5])))
+        && (slots.size() < 7 || !existsAfter(reservationPath(slots[6])))
+        && (slots.size() < 8 || !existsAfter(reservationPath(slots[7])));
+    }
+
+    function validAppointmentData() {
+      let appointment = request.resource.data;
+      return appointment.keys().hasOnly([
+          'patientId',
+          'dentistId',
+          'professionalUid',
+          'localDate',
+          'startTime',
+          'endTime',
+          'startMinute',
+          'endMinute',
+          'startAt',
+          'endAt',
+          'durationMinutes',
+          'status',
+          'reason',
+          'notes',
+          'slotIds',
+          'auditLogId',
+          'createdAt',
+          'createdBy',
+          'updatedAt',
+          'updatedBy'
+        ])
+          && appointment.keys().size() == 20
+        && validDentistId(appointment.dentistId)
+        && (
+          !appointment.keys().hasAny(['professionalUid'])
+          || appointment.professionalUid is string
+        )
+        && appointment.patientId is string
+        && exists(/databases/$(database)/documents/patients/$(appointment.patientId))
+        && appointment.localDate is string
+        && appointment.localDate.matches('^[0-9]{4}-[0-9]{2}-[0-9]{2}$')
+        && appointment.startTime is string
+        && appointment.startMinute is int
+        && appointment.startMinute >= 0
+        && appointment.startMinute < 1440
+        && appointment.startMinute % 15 == 0
+        && appointment.startTime == timeForMinute(appointment.startMinute)
+        && appointment.endMinute is int
+        && appointment.durationMinutes in [15, 30, 45, 60, 90, 120]
+        && appointment.endMinute == appointment.startMinute + appointment.durationMinutes
+        && appointment.endMinute < 1440
+        && appointment.endMinute % 15 == 0
+        && appointment.endTime == timeForMinute(appointment.endMinute)
+        && appointment.startAt is timestamp
+        && appointment.endAt is timestamp
+        && appointment.startAt < appointment.endAt
+        && timestampMatchesLocalMinute(
+          appointment.startAt,
+          appointment.localDate,
+          appointment.startMinute
+        )
+        && timestampMatchesLocalMinute(
+          appointment.endAt,
+          appointment.localDate,
+          appointment.endMinute
+        )
+        && appointment.status in ['pending', 'confirmed', 'cancelled']
+        && appointment.reason is string
+        && appointment.reason.size() > 0
+        && appointment.reason.size() <= 160
+        && appointment.notes is string
+        && appointment.notes.size() <= 1000
+        && appointment.auditLogId is string
+        && appointment.createdAt is timestamp
+        && appointment.createdBy is string
+        && appointment.updatedAt == request.time
+        && appointment.updatedBy == request.auth.uid;
+    }
+
+    function appointmentCoreUnchanged() {
+      return request.resource.data.diff(resource.data).affectedKeys().hasOnly([
+        'status',
+        'auditLogId',
+        'updatedAt',
+        'updatedBy'
+      ]);
+    }
+
+    function validAppointmentUpdateMetadata() {
+      return request.resource.data.auditLogId is string
+        && request.resource.data.updatedAt == request.time
+        && request.resource.data.updatedBy == request.auth.uid;
+    }
+
+    function validScheduleBlock(blockId, dentistId) {
+      let block = request.resource.data;
+      let firstSlotId = block.slotIds[0];
+      let firstReservationPath = reservationPath(firstSlotId);
+      let firstReservation = getAfter(firstReservationPath).data;
+      return validDentistId(dentistId)
+        && block.keys().hasOnly([
+          'dentistId',
+          'professionalUid',
+          'date',
+          'startTime',
+          'endTime',
+          'startMinute',
+          'endMinute',
+          'reason',
+          'slotIds',
+          'createdBy',
+          'createdAt'
+        ])
+        && block.keys().size() == 11
+        && block.dentistId == dentistId
+        && block.professionalUid is string
+        && profileMatches(block.professionalUid, dentistId)
+        && block.date is string
+        && block.date.matches('^[0-9]{4}-[0-9]{2}-[0-9]{2}$')
+        && block.startTime is string
+        && block.startTime.matches('^([01][0-9]|2[0-3]):[0-5][0-9]$')
+        && block.endTime is string
+        && block.endTime.matches('^([01][0-9]|2[0-3]):[0-5][0-9]$')
+        && block.startTime < block.endTime
+        && block.startMinute is int
+        && block.endMinute is int
+        && block.startMinute >= 0
+        && block.endMinute <= 1440
+        && block.startMinute % 15 == 0
+        && block.endMinute % 15 == 0
+        && block.endMinute > block.startMinute
+        && block.slotIds is list
+        && block.slotIds.size() > 0
+        && block.slotIds.size() <= 96
+        && block.slotIds.toSet().size() == block.slotIds.size()
+        && existsAfter(firstReservationPath)
+        && (
+          (
+            firstReservation.ownerType == 'block'
+            && firstReservation.ownerId == blockId
+          )
+          || (
+            firstReservation.ownerType == 'appointment'
+            && blockReservationMatchesAppointment(
+              firstReservation.ownerId,
+              firstSlotId,
+              dentistId,
+              block.date
+            )
+          )
+        )
+        && block.reason is string
+        && block.reason.size() > 0
+        && block.reason.size() <= 120
+        && block.createdBy == request.auth.uid
+        && block.createdAt == request.time;
+    }
+
+    function blockReservationMatchesAppointment(appointmentId, slotId, dentistId, date) {
+      let appointmentRef = appointmentPath(appointmentId);
+      let appointment = getAfter(appointmentRef).data;
+      return existsAfter(appointmentRef)
+        && appointment.status in ['pending', 'confirmed']
+        && appointment.dentistId == dentistId
+        && appointment.localDate == date
+        && appointment.slotIds.hasAny([slotId]);
+    }
+
+    function validAppointmentReservation(slotId) {
+      let reservation = request.resource.data;
+      let appointmentRef = appointmentPath(reservation.ownerId);
+      let appointment = getAfter(appointmentRef).data;
+      return reservation.keys().hasOnly([
+          'slotId',
+          'slotMinute',
+          'ownerId',
+          'ownerType',
+          'dentistId',
+          'date',
+          'createdBy',
+          'createdAt'
+        ])
+        && reservation.keys().size() == 8
+        && reservation.slotId == slotId
+        && reservation.slotMinute is int
+        && reservation.createdBy == request.auth.uid
+        && reservation.createdAt == request.time
+        && reservation.ownerType == 'appointment'
+        && existsAfter(appointmentRef)
+        && appointment.status in ['pending', 'confirmed']
+        && appointment.slotIds.hasAny([slotId])
+        && slotId == appointment.dentistId + '_'
+          + appointment.localDate + '_' + string(reservation.slotMinute)
+        && reservation.dentistId == appointment.dentistId
+        && reservation.date == appointment.localDate
+        && validDentistId(reservation.dentistId);
+    }
+
+    function validBlockReservation(slotId) {
+      let reservation = request.resource.data;
+      let blockRef = scheduleBlockPath(reservation.ownerId);
+      let block = getAfter(blockRef).data;
+      return reservation.keys().hasOnly([
+          'slotId',
+          'slotMinute',
+          'ownerId',
+          'ownerType',
+          'dentistId',
+          'date',
+          'createdBy',
+          'createdAt'
+        ])
+        && reservation.keys().size() == 8
+        && reservation.slotId == slotId
+        && reservation.slotMinute is int
+        && reservation.slotMinute >= 0
+        && reservation.slotMinute < 1440
+        && reservation.slotMinute % 15 == 0
+        && reservation.createdBy == request.auth.uid
+        && reservation.createdAt == request.time
+        && reservation.ownerType == 'block'
+        && existsAfter(blockRef)
+        && block.slotIds.hasAny([slotId])
+        && slotId == block.dentistId + '_'
+          + block.date + '_' + string(reservation.slotMinute)
+        && reservation.slotMinute >= block.startMinute
+        && reservation.slotMinute < block.endMinute
+        && reservation.dentistId == block.dentistId
+        && reservation.date == block.date;
+    }
+
+    function validPatientData(patient) {
+      return patient.keys().hasAll([
+          'firstName',
+          'lastName',
+          'dni',
+          'birthDate',
+          'phone',
+          'email',
+          'address',
+          'observations',
+          'firstNameSearch',
+          'lastNameSearch',
+          'fullNameSearch',
+          'auditLogId',
+          'createdAt',
+          'updatedAt',
+          'createdBy',
+          'updatedBy'
+        ])
+        && patient.keys().hasOnly([
+          'firstName',
+          'lastName',
+          'dni',
+          'birthDate',
+          'phone',
+          'email',
+          'address',
+          'observations',
+          'firstNameSearch',
+          'lastNameSearch',
+          'fullNameSearch',
+          'auditLogId',
+          'createdAt',
+          'updatedAt',
+          'createdBy',
+          'updatedBy'
+        ])
+        && patient.firstName is string
+        && patient.firstName.size() > 0
+        && patient.firstName.size() <= 80
+        && patient.lastName is string
+        && patient.lastName.size() > 0
+        && patient.lastName.size() <= 80
+        && patient.dni is string
+        && patient.dni.matches('^[0-9]{7,8}$')
+        && patient.birthDate is timestamp
+        && patient.birthDate < request.time
+        && patient.phone is string
+        && patient.phone.matches('^[0-9()+ .-]{6,25}$')
+        && patient.email is string
+        && patient.email.size() <= 254
+        && (
+          patient.email == ''
+          || patient.email.matches('^[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+[.][A-Za-z]{2,}$')
+        )
+        && patient.address is string
+        && patient.address.size() <= 250
+        && patient.observations is string
+        && patient.observations.size() <= 2000
+        && patient.firstNameSearch is string
+        && patient.firstNameSearch.size() > 0
+        && patient.firstNameSearch.size() <= 160
+        && patient.lastNameSearch is string
+        && patient.lastNameSearch.size() > 0
+        && patient.lastNameSearch.size() <= 160
+        && patient.fullNameSearch is string
+        && patient.fullNameSearch.size() > 0
+        && patient.fullNameSearch.size() <= 321
+        && patient.auditLogId is string
+        && patient.auditLogId.size() > 0
+        && patient.auditLogId.size() <= 150;
+    }
+
+    function patientIndexPath(dni) {
+      return /databases/$(database)/documents/patientDniIndex/$(dni);
+    }
+
+    function patientIndexMatchesAfter(dni, patientId) {
+      return existsAfter(patientIndexPath(dni))
+        && getAfter(patientIndexPath(dni)).data.patientId == patientId
+        && getAfter(patientIndexPath(dni)).data.dni == dni;
+    }
+
+    function freshAuditMatches(logId, entity, entityId, operation) {
+      let auditPath = /databases/$(database)/documents/auditLogs/$(logId);
+      let audit = getAfter(auditPath).data;
+      return logId is string
+        && !exists(auditPath)
+        && existsAfter(auditPath)
+        && audit.keys().hasOnly([
+          'entity',
+          'entityId',
+          'operation',
+          'actorUid',
+          'createdAt'
+        ])
+        && audit.keys().size() == 5
+        && audit.entity == entity
+        && audit.entityId == entityId
+        && audit.operation == operation
+        && audit.actorUid == request.auth.uid
+        && audit.createdAt == request.time;
+    }
+
+    function freshAuditId(logId) {
+      let auditPath = /databases/$(database)/documents/auditLogs/$(logId);
+      return logId is string
+        && !exists(auditPath)
+        && existsAfter(auditPath);
+    }
+
+    function validMedicalRecordCreatedAudit(logId, audit, patientId) {
+      let recordPath = /databases/$(database)/documents/medicalRecords/$(patientId);
+      return audit.entityId == patientId
+        && audit.operation == 'history_created'
+        && existsAfter(recordPath)
+        && getAfter(recordPath).data.auditLogId == logId
+        && getAfter(recordPath).data.updatedBy == request.auth.uid
+        && getAfter(recordPath).data.updatedAt == request.time
+        && getAfter(recordPath).data.createdBy == request.auth.uid
+        && getAfter(recordPath).data.createdAt == request.time;
+    }
+
+    function validMedicalHistoryUpdatedAudit(logId, audit, patientId, revisionId) {
+      let recordPath = /databases/$(database)/documents/medicalRecords/$(patientId);
+      let revisionPath = /databases/$(database)/documents/medicalRecords/$(patientId)/historyRevisions/$(revisionId);
+      return audit.operation == 'history_updated'
+        && revisionId == logId
+        && audit.entityId == patientId + '/historyRevisions/' + revisionId
+        && existsAfter(recordPath)
+        && getAfter(recordPath).data.auditLogId == logId
+        && getAfter(recordPath).data.updatedBy == request.auth.uid
+        && getAfter(recordPath).data.updatedAt == request.time
+        && !exists(revisionPath)
+        && existsAfter(revisionPath)
+        && getAfter(revisionPath).data.auditLogId == logId
+        && getAfter(revisionPath).data.patientId == patientId
+        && getAfter(revisionPath).data.medicalHistory
+          == get(recordPath).data.medicalHistory;
+    }
+
+    function validConsultationAudit(logId, audit, patientId, consultationId) {
+      let consultationPath = /databases/$(database)/documents/medicalRecords/$(patientId)/consultations/$(consultationId);
+      let revisionPath = /databases/$(database)/documents/medicalRecords/$(patientId)/consultations/$(consultationId)/revisions/$(logId);
+      return audit.entityId == patientId + '/consultations/' + consultationId
+        && existsAfter(consultationPath)
+        && getAfter(consultationPath).data.auditLogId == logId
+        && getAfter(consultationPath).data.updatedBy == request.auth.uid
+        && getAfter(consultationPath).data.updatedAt == request.time
+        && (
+          (
+            audit.operation == 'consultation_created'
+            && !exists(consultationPath)
+            && getAfter(consultationPath).data.professionalUid == request.auth.uid
+            && getAfter(consultationPath).data.createdBy == request.auth.uid
+            && getAfter(consultationPath).data.createdAt == request.time
+          )
+          || (
+            audit.operation == 'consultation_updated'
+            && exists(consultationPath)
+            && !exists(revisionPath)
+            && existsAfter(revisionPath)
+            && getAfter(revisionPath).data.auditLogId == logId
+            && getAfter(revisionPath).data.consultation == get(consultationPath).data
+          )
+        );
+    }
+
+    function validTreatmentAudit(logId, audit, patientId, treatmentId) {
+      let treatmentPath = /databases/$(database)/documents/medicalRecords/$(patientId)/treatments/$(treatmentId);
+      let revisionPath = /databases/$(database)/documents/medicalRecords/$(patientId)/treatments/$(treatmentId)/revisions/$(logId);
+      return audit.entityId == patientId + '/treatments/' + treatmentId
+        && existsAfter(treatmentPath)
+        && getAfter(treatmentPath).data.auditLogId == logId
+        && getAfter(treatmentPath).data.updatedBy == request.auth.uid
+        && getAfter(treatmentPath).data.updatedAt == request.time
+        && (
+          (
+            audit.operation == 'treatment_created'
+            && !exists(treatmentPath)
+            && getAfter(treatmentPath).data.professionalUid == request.auth.uid
+            && getAfter(treatmentPath).data.createdBy == request.auth.uid
+            && getAfter(treatmentPath).data.createdAt == request.time
+          )
+          || (
+            audit.operation == 'treatment_updated'
+            && exists(treatmentPath)
+            && !exists(revisionPath)
+            && existsAfter(revisionPath)
+            && getAfter(revisionPath).data.auditLogId == logId
+            && getAfter(revisionPath).data.treatment == get(treatmentPath).data
+          )
+        );
+    }
+
+    function validTreatmentEvolutionAudit(logId, audit, patientId, treatmentId, evolutionId) {
+      let treatmentPath = /databases/$(database)/documents/medicalRecords/$(patientId)/treatments/$(treatmentId);
+      let evolutionPath = /databases/$(database)/documents/medicalRecords/$(patientId)/treatments/$(treatmentId)/evolutions/$(evolutionId);
+      let revisionPath = /databases/$(database)/documents/medicalRecords/$(patientId)/treatments/$(treatmentId)/revisions/$(logId);
+      return audit.entityId == patientId + '/treatments/' + treatmentId + '/evolutions/' + evolutionId
+        && existsAfter(treatmentPath)
+        && existsAfter(evolutionPath)
+        && !exists(evolutionPath)
+        && !exists(revisionPath)
+        && existsAfter(revisionPath)
+        && getAfter(revisionPath).data.auditLogId == logId
+        && getAfter(revisionPath).data.patientId == patientId
+        && getAfter(revisionPath).data.treatment == get(treatmentPath).data
+        && getAfter(treatmentPath).data.auditLogId == logId
+        && getAfter(treatmentPath).data.updatedBy == request.auth.uid
+        && getAfter(treatmentPath).data.updatedAt == request.time
+        && getAfter(evolutionPath).data.auditLogId == logId
+        && getAfter(evolutionPath).data.createdBy == request.auth.uid
+        && getAfter(evolutionPath).data.professionalUid == request.auth.uid
+        && getAfter(evolutionPath).data.createdAt == request.time
+        && getAfter(evolutionPath).data.status == getAfter(treatmentPath).data.status
+        && audit.entity == 'treatmentEvolution'
+        && audit.operation == 'treatment_evolution_recorded';
+    }
+
+    function treatmentEvolutionAuditMatches(logId, patientId, treatmentId) {
+      let auditPath = /databases/$(database)/documents/auditLogs/$(logId);
+      let audit = getAfter(auditPath).data;
+      let parts = audit.entityId.split('/');
+      return !exists(auditPath)
+        && existsAfter(auditPath)
+        && audit.keys().hasOnly([
+          'entity',
+          'entityId',
+          'operation',
+          'actorUid',
+          'createdAt'
+        ])
+        && audit.entity == 'treatmentEvolution'
+        && parts.size() == 5
+        && parts[0] == patientId
+        && parts[1] == 'treatments'
+        && parts[2] == treatmentId
+        && parts[3] == 'evolutions'
+        && audit.operation == 'treatment_evolution_recorded'
+        && audit.actorUid == request.auth.uid
+        && audit.createdAt == request.time;
+    }
+
+    function treatmentRevisionAfter(patientId, treatmentId, logId, previousTreatment) {
+      let revisionPath = /databases/$(database)/documents/medicalRecords/$(patientId)/treatments/$(treatmentId)/revisions/$(logId);
+      return !exists(revisionPath)
+        && existsAfter(revisionPath)
+        && getAfter(revisionPath).data.auditLogId == logId
+        && getAfter(revisionPath).data.patientId == patientId
+        && getAfter(revisionPath).data.treatment == previousTreatment
+        && getAfter(revisionPath).data.createdBy == request.auth.uid
+        && getAfter(revisionPath).data.createdAt == request.time;
+    }
+
+    function consultationRevisionAfter(patientId, consultationId, logId, previousConsultation) {
+      let revisionPath = /databases/$(database)/documents/medicalRecords/$(patientId)/consultations/$(consultationId)/revisions/$(logId);
+      return !exists(revisionPath)
+        && existsAfter(revisionPath)
+        && getAfter(revisionPath).data.auditLogId == logId
+        && getAfter(revisionPath).data.patientId == patientId
+        && getAfter(revisionPath).data.consultation == previousConsultation
+        && getAfter(revisionPath).data.createdBy == request.auth.uid
+        && getAfter(revisionPath).data.createdAt == request.time;
+    }
+
+    function medicalHistoryRevisionAfter(patientId, logId, previousHistory) {
+      let revisionPath = /databases/$(database)/documents/medicalRecords/$(patientId)/historyRevisions/$(logId);
+      return !exists(revisionPath)
+        && existsAfter(revisionPath)
+        && getAfter(revisionPath).data.auditLogId == logId
+        && getAfter(revisionPath).data.patientId == patientId
+        && getAfter(revisionPath).data.medicalHistory == previousHistory
+        && getAfter(revisionPath).data.createdBy == request.auth.uid
+        && getAfter(revisionPath).data.createdAt == request.time;
+    }
+
+    function validClinicalAuditLog(logId) {
+      let audit = request.resource.data;
+      let parts = audit.entityId is string ? audit.entityId.split('/') : [];
+      return isProfessional()
+        && audit.keys().hasOnly([
+          'entity',
+          'entityId',
+          'operation',
+          'actorUid',
+          'createdAt'
+        ])
+        && audit.keys().hasAll([
+          'entity',
+          'entityId',
+          'operation',
+          'actorUid',
+          'createdAt'
+        ])
+        && audit.actorUid == request.auth.uid
+        && audit.createdAt == request.time
+        && (
+          (
+            audit.entity == 'medicalRecord'
+            && (
+              (
+                parts.size() == 1
+                && validMedicalRecordCreatedAudit(logId, audit, parts[0])
+              )
+              || (
+                parts.size() == 3
+                && parts[1] == 'historyRevisions'
+                && validMedicalHistoryUpdatedAudit(logId, audit, parts[0], parts[2])
+              )
+            )
+          )
+          || (
+            audit.entity == 'consultation'
+            && (audit.operation == 'consultation_created' || audit.operation == 'consultation_updated')
+            && parts.size() == 3
+            && parts[1] == 'consultations'
+            && validConsultationAudit(logId, audit, parts[0], parts[2])
+          )
+          || (
+            audit.entity == 'treatment'
+            && (audit.operation == 'treatment_created' || audit.operation == 'treatment_updated')
+            && parts.size() == 3
+            && parts[1] == 'treatments'
+            && validTreatmentAudit(logId, audit, parts[0], parts[2])
+          )
+          || (
+            audit.entity == 'treatmentEvolution'
+            && audit.operation == 'treatment_evolution_recorded'
+            && parts.size() == 5
+            && parts[1] == 'treatments'
+            && parts[3] == 'evolutions'
+            && validTreatmentEvolutionAudit(logId, audit, parts[0], parts[2], parts[4])
+          )
+        );
+    }
+
+    function validReferralData() {
+      let referral = request.resource.data;
+      return referral.keys().hasOnly([
+          'clinicId',
+          'patientId',
+          'referrerUid',
+          'referrerDentistId',
+          'recipientUid',
+          'recipientDentistId',
+          'status',
+          'reason',
+          'notes',
+          'createdAt',
+          'createdBy',
+          'updatedAt',
+          'updatedBy',
+          'auditLogId'
+        ])
+        && referral.keys().hasAll([
+          'clinicId',
+          'patientId',
+          'referrerUid',
+          'referrerDentistId',
+          'recipientUid',
+          'recipientDentistId',
+          'status',
+          'reason',
+          'notes',
+          'createdAt',
+          'createdBy',
+          'updatedAt',
+          'updatedBy',
+          'auditLogId'
+        ])
+        && referral.clinicId == 'centro-odontologico-colon'
+        && exists(/databases/$(database)/documents/patients/$(referral.patientId))
+        && referral.referrerUid == request.auth.uid
+        && referral.referrerDentistId == request.auth.token.dentistId
+        && referral.recipientUid is string
+        && profileMatches(referral.recipientUid, referral.recipientDentistId)
+        && referral.recipientUid != referral.referrerUid
+        && referral.status == 'pending'
+        && referral.reason is string
+        && referral.reason.size() > 0
+        && referral.reason.size() <= 1000
+        && referral.notes is string
+        && referral.notes.size() <= 2000
+        && referral.createdAt == request.time
+        && referral.createdBy == request.auth.uid
+        && referral.updatedAt == request.time
+        && referral.updatedBy == request.auth.uid
+        && referral.auditLogId is string
+        && referral.auditLogId.size() > 0;
+    }
+
+    function validReferralAuditLog(logId) {
+      let audit = request.resource.data;
+      let referralPath = /databases/$(database)/documents/referrals/$(audit.entityId);
+      let referral = getAfter(referralPath).data;
+      return audit.entity == 'referral'
+        && audit.entityId is string
+        && audit.operation in ['referral_created', 'referral_accepted', 'referral_rejected']
+        && audit.actorUid == request.auth.uid
+        && audit.createdAt == request.time
+        && existsAfter(referralPath)
+        && referral.auditLogId == logId
+        && referral.updatedAt == request.time
+        && referral.updatedBy == request.auth.uid
+        && (
+          (
+            audit.operation == 'referral_created'
+            && !exists(referralPath)
+            && referral.status == 'pending'
+            && referral.createdBy == request.auth.uid
+            && referral.createdAt == request.time
+          )
+          || (
+            audit.operation == 'referral_accepted'
+            && exists(referralPath)
+            && get(referralPath).data.status == 'pending'
+            && referral.status == 'accepted'
+          )
+          || (
+            audit.operation == 'referral_rejected'
+            && exists(referralPath)
+            && get(referralPath).data.status == 'pending'
+            && referral.status == 'rejected'
+          )
+        );
+    }
+
+    function validBudgetData(budgetId) {
+      let budget = request.resource.data;
+      return budget.keys().hasOnly([
+          'clinicId',
+          'patientId',
+          'status',
+          'expiresAt',
+          'createdAt',
+          'createdBy',
+          'updatedAt',
+          'updatedBy',
+          'auditLogId'
+        ])
+        && budget.keys().hasAll([
+          'clinicId',
+          'patientId',
+          'status',
+          'expiresAt',
+          'createdAt',
+          'createdBy',
+          'updatedAt',
+          'updatedBy',
+          'auditLogId'
+        ])
+        && budget.clinicId == 'centro-odontologico-colon'
+        && exists(/databases/$(database)/documents/patients/$(budget.patientId))
+        && budget.status in ['pending', 'accepted', 'rejected']
+        && (budget.expiresAt == null || budget.expiresAt is timestamp)
+        && budget.createdAt is timestamp
+        && budget.createdBy is string
+        && budget.updatedAt == request.time
+        && budget.updatedBy == request.auth.uid
+        && budget.auditLogId is string
+        && budgetId.size() > 0;
+    }
+
+    function validBudgetItemData(itemId) {
+      let item = request.resource.data;
+      let budgetPath = /databases/$(database)/documents/budgets/$(item.budgetId);
+      return item.keys().hasOnly([
+          'clinicId',
+          'patientId',
+          'budgetId',
+          'description',
+          'quantity',
+          'unitPriceCents',
+          'totalCents',
+          'paidCents',
+          'auditLogId',
+          'createdAt',
+          'createdBy',
+          'updatedAt',
+          'updatedBy'
+        ])
+        && item.keys().hasAll([
+          'clinicId',
+          'patientId',
+          'budgetId',
+          'description',
+          'quantity',
+          'unitPriceCents',
+          'totalCents',
+          'paidCents',
+          'auditLogId',
+          'createdAt',
+          'createdBy',
+          'updatedAt',
+          'updatedBy'
+        ])
+        && item.clinicId == 'centro-odontologico-colon'
+        && !exists(budgetPath)
+        && existsAfter(budgetPath)
+        && getAfter(budgetPath).data.patientId == item.patientId
+        && getAfter(budgetPath).data.status == 'pending'
+        && item.description is string
+        && item.description.size() > 0
+        && item.description.size() <= 200
+        && item.quantity is int
+        && item.quantity >= 1
+        && item.quantity <= 1000
+        && item.unitPriceCents is int
+        && item.unitPriceCents > 0
+        && item.unitPriceCents <= 9000000000
+        && item.totalCents == item.quantity * item.unitPriceCents
+        && item.totalCents <= 9000000000000
+        && item.paidCents == 0
+        && item.auditLogId == getAfter(budgetPath).data.auditLogId
+        && freshAuditMatches(
+          item.auditLogId,
+          'budget',
+          item.budgetId,
+          'budget_created'
+        )
+        && item.createdAt == request.time
+        && item.createdBy == request.auth.uid
+        && item.updatedAt == request.time
+        && item.updatedBy == request.auth.uid
+        && itemId.size() > 0;
+    }
+
+    function validBudgetCreatedAudit(logId, audit, budgetId) {
+      let budgetPath = /databases/$(database)/documents/budgets/$(budgetId);
+      let budget = getAfter(budgetPath).data;
+      return audit.operation == 'budget_created'
+        && !exists(budgetPath)
+        && existsAfter(budgetPath)
+        && budget.auditLogId == logId
+        && budget.status == 'pending'
+        && budget.createdBy == request.auth.uid
+        && budget.createdAt == request.time
+        && budget.updatedBy == request.auth.uid
+        && budget.updatedAt == request.time;
+    }
+
+    function validBudgetStatusAudit(logId, audit, budgetId) {
+      let budgetPath = /databases/$(database)/documents/budgets/$(budgetId);
+      let previousBudget = get(budgetPath).data;
+      let budget = getAfter(budgetPath).data;
+      return audit.operation in ['budget_accepted', 'budget_rejected']
+        && exists(budgetPath)
+        && existsAfter(budgetPath)
+        && budget.auditLogId == logId
+        && budget.updatedBy == request.auth.uid
+        && budget.updatedAt == request.time
+        && previousBudget.status == 'pending'
+        && (
+          (audit.operation == 'budget_accepted' && budget.status == 'accepted')
+          || (audit.operation == 'budget_rejected' && budget.status == 'rejected')
+        );
+    }
+
+    function validPaymentCreatedAudit(logId, audit, paymentId) {
+      let paymentPath = /databases/$(database)/documents/payments/$(paymentId);
+      let payment = getAfter(paymentPath).data;
+      let itemPath = /databases/$(database)/documents/budgetItems/$(payment.budgetItemId);
+      let item = getAfter(itemPath).data;
+      let budgetPath = /databases/$(database)/documents/budgets/$(payment.budgetId);
+      return audit.operation == 'payment_created'
+        && !exists(paymentPath)
+        && existsAfter(paymentPath)
+        && payment.auditLogId == logId
+        && payment.createdBy == request.auth.uid
+        && payment.createdAt == request.time
+        && payment.paidAt == request.time
+        && payment.amountCents is int
+        && payment.amountCents > 0
+        && exists(itemPath)
+        && existsAfter(itemPath)
+        && item.patientId == payment.patientId
+        && item.budgetId == payment.budgetId
+        && item.lastPaymentId == paymentId
+        && item.auditLogId == logId
+        && item.updatedBy == request.auth.uid
+        && item.updatedAt == request.time
+        && item.paidCents == get(itemPath).data.paidCents + payment.amountCents
+        && item.paidCents <= item.totalCents
+        && exists(budgetPath)
+        && get(budgetPath).data.status == 'accepted'
+        && get(budgetPath).data.patientId == payment.patientId;
+    }
+
+    function validFinancialAuditLog(logId) {
+      let audit = request.resource.data;
+      return audit.keys().hasOnly([
+          'entity',
+          'entityId',
+          'operation',
+          'actorUid',
+          'createdAt'
+        ])
+        && audit.keys().hasAll([
+          'entity',
+          'entityId',
+          'operation',
+          'actorUid',
+          'createdAt'
+        ])
+        && audit.actorUid == request.auth.uid
+        && audit.createdAt == request.time
+        && (
+          (
+            audit.entity == 'budget'
+            && audit.entityId is string
+            && (
+              validBudgetCreatedAudit(logId, audit, audit.entityId)
+              || validBudgetStatusAudit(logId, audit, audit.entityId)
+            )
+          )
+          || (
+            audit.entity == 'payment'
+            && audit.entityId is string
+            && validPaymentCreatedAudit(logId, audit, audit.entityId)
+          )
+        );
+    }
+
+    function validPatientFileData(fileId) {
+      let file = request.resource.data;
+      return file.keys().hasOnly([
+          'clinicId',
+          'patientId',
+          'originalName',
+          'extension',
+          'contentType',
+          'sizeBytes',
+          'storagePath',
+          'status',
+          'uploadedAt',
+          'uploadedBy',
+          'auditLogId'
+        ])
+        && file.keys().hasAll([
+          'clinicId',
+          'patientId',
+          'originalName',
+          'extension',
+          'contentType',
+          'sizeBytes',
+          'storagePath',
+          'status',
+          'uploadedAt',
+          'uploadedBy',
+          'auditLogId'
+        ])
+        && file.clinicId == 'centro-odontologico-colon'
+        && exists(/databases/$(database)/documents/patients/$(file.patientId))
+        && file.originalName is string
+        && file.originalName.size() > 0
+        && file.originalName.size() <= 255
+        && file.extension in ['pdf', 'jpg', 'jpeg', 'png', 'stl', 'ply', 'obj', 'glb']
+        && (
+          (file.extension == 'pdf' && file.contentType == 'application/pdf')
+          || (file.extension in ['jpg', 'jpeg'] && file.contentType == 'image/jpeg')
+          || (file.extension == 'png' && file.contentType == 'image/png')
+          || (file.extension == 'stl' && file.contentType == 'model/stl')
+          || (file.extension == 'ply' && file.contentType == 'application/octet-stream')
+          || (file.extension == 'obj' && file.contentType == 'text/plain')
+          || (file.extension == 'glb' && file.contentType == 'model/gltf-binary')
+        )
+        && file.sizeBytes is int
+        && file.sizeBytes > 0
+        && file.sizeBytes <= 104857600
+        && file.storagePath == 'patient-files/' + file.patientId + '/'
+          + file.extension + '/' + fileId
+        && file.status == 'uploading'
+        && file.uploadedAt == request.time
+        && file.uploadedBy == request.auth.uid
+        && file.auditLogId is string;
+    }
+
+    function validPatientFileAuditLog(logId) {
+      let audit = request.resource.data;
+      let filePath = /databases/$(database)/documents/patientFiles/$(audit.entityId);
+      return audit.entity == 'patientFile'
+        && audit.entityId is string
+        && audit.operation in [
+          'patient_file_upload_started',
+          'patient_file_uploaded',
+          'patient_file_delete_requested',
+          'patient_file_upload_cleanup_requested',
+          'patient_file_deleted'
+        ]
+        && audit.actorUid == request.auth.uid
+        && audit.createdAt == request.time
+        && (
+          (
+            audit.operation == 'patient_file_upload_started'
+            && !exists(filePath)
+            && existsAfter(filePath)
+            && getAfter(filePath).data.auditLogId == logId
+            && getAfter(filePath).data.status == 'uploading'
+            && getAfter(filePath).data.uploadedBy == request.auth.uid
+            && getAfter(filePath).data.uploadedAt == request.time
+          )
+          || (
+            audit.operation == 'patient_file_uploaded'
+            && exists(filePath)
+            && existsAfter(filePath)
+            && get(filePath).data.status == 'uploading'
+            && getAfter(filePath).data.status == 'active'
+            && getAfter(filePath).data.auditLogId == logId
+            && getAfter(filePath).data.updatedBy == request.auth.uid
+            && getAfter(filePath).data.updatedAt == request.time
+          )
+          || (
+            audit.operation == 'patient_file_delete_requested'
+            && exists(filePath)
+            && existsAfter(filePath)
+            && get(filePath).data.status == 'active'
+            && getAfter(filePath).data.status == 'deleting'
+            && getAfter(filePath).data.auditLogId == logId
+            && getAfter(filePath).data.updatedBy == request.auth.uid
+            && getAfter(filePath).data.updatedAt == request.time
+          )
+          || (
+            audit.operation == 'patient_file_upload_cleanup_requested'
+            && exists(filePath)
+            && existsAfter(filePath)
+            && get(filePath).data.status == 'uploading'
+            && getAfter(filePath).data.status == 'deleting'
+            && getAfter(filePath).data.auditLogId == logId
+            && getAfter(filePath).data.updatedBy == request.auth.uid
+            && getAfter(filePath).data.updatedAt == request.time
+          )
+          || (
+            audit.operation == 'patient_file_deleted'
+            && exists(filePath)
+            && existsAfter(filePath)
+            && get(filePath).data.status == 'deleting'
+            && getAfter(filePath).data.status == 'deleted'
+            && getAfter(filePath).data.auditLogId == logId
+            && getAfter(filePath).data.updatedBy == request.auth.uid
+            && getAfter(filePath).data.updatedAt == request.time
+          )
+        );
+    }
+
+    function validBudgetItemPaymentUpdate(itemId) {
+      let item = request.resource.data;
+      let paymentPath = /databases/$(database)/documents/payments/$(item.lastPaymentId);
+      let payment = getAfter(paymentPath).data;
+      return item.diff(resource.data).affectedKeys().hasOnly([
+          'paidCents',
+          'lastPaymentId',
+          'auditLogId',
+          'updatedAt',
+          'updatedBy'
+        ])
+        && item.lastPaymentId is string
+        && !exists(paymentPath)
+        && existsAfter(paymentPath)
+        && payment.budgetItemId == itemId
+        && payment.patientId == item.patientId
+        && payment.budgetId == item.budgetId
+        && payment.amountCents is int
+        && item.paidCents == resource.data.paidCents + payment.amountCents
+        && item.paidCents <= resource.data.totalCents
+        && item.auditLogId == payment.auditLogId
+        && item.updatedBy == request.auth.uid
+        && item.updatedAt == request.time
+        && get(/databases/$(database)/documents/budgets/$(item.budgetId)).data.status
+          == 'accepted';
+    }
+
+    function validAppointmentAuditLog(logId) {
+      let audit = request.resource.data;
+      let appointmentRef = appointmentPath(audit.entityId);
+      let appointment = getAfter(appointmentRef).data;
+      return audit.keys().hasOnly([
+          'entity',
+          'entityId',
+          'operation',
+          'actorUid',
+          'createdAt'
+        ])
+        && audit.keys().size() == 5
+        && audit.entity == 'appointment'
+        && audit.entityId is string
+        && audit.operation in [
+          'appointment_created', 'appointment_updated',
+          'appointment_confirmed', 'appointment_cancelled'
+        ]
+        && audit.actorUid == request.auth.uid
+        && audit.createdAt == request.time
+        && existsAfter(appointmentRef)
+        && appointment.auditLogId == logId
+        && appointment.updatedBy == request.auth.uid
+        && appointment.updatedAt == request.time
+        && (
+          audit.operation == 'appointment_created'
+            ? appointment.status == 'pending'
+              && appointment.createdBy == request.auth.uid
+              && appointment.createdAt == request.time
+            : validExistingAppointmentAudit(audit, appointment, logId, appointmentRef)
+        );
+    }
+
+    function validExistingAppointmentAudit(audit, appointment, logId, appointmentRef) {
+      let previousAppointment = get(appointmentRef).data;
+      return exists(appointmentRef)
+        && (
+          audit.operation == 'appointment_updated'
+            ? previousAppointment.auditLogId != logId
+              && appointment.status == previousAppointment.status
+              && appointment.status in ['pending', 'confirmed']
+            : audit.operation == 'appointment_confirmed'
+              ? previousAppointment.status == 'pending'
+                && appointment.status == 'confirmed'
+              : audit.operation == 'appointment_cancelled'
+                && previousAppointment.status in ['pending', 'confirmed']
+                && appointment.status == 'cancelled'
+        );
+    }
+
+    function validAuditLog(logId) {
+      let audit = request.resource.data;
+      let patientPath = /databases/$(database)/documents/patients/$(audit.entityId);
+      return audit.keys().hasOnly([
+          'entity',
+          'entityId',
+          'operation',
+          'actorUid',
+          'createdAt'
+        ])
+        && audit.entity == 'patient'
+        && audit.entityId is string
+        && audit.operation in ['patient_created', 'patient_updated']
+        && audit.actorUid == request.auth.uid
+        && audit.createdAt == request.time
+        && existsAfter(patientPath)
+        && getAfter(patientPath).data.auditLogId == logId
+        && getAfter(patientPath).data.updatedBy == request.auth.uid
+        && getAfter(patientPath).data.updatedAt == request.time
+        && (
+          (
+            audit.operation == 'patient_created'
+            && getAfter(patientPath).data.createdBy == request.auth.uid
+            && getAfter(patientPath).data.createdAt == request.time
+          )
+          || (
+            audit.operation == 'patient_updated'
+            && get(patientPath).data.auditLogId != logId
+          )
+        );
+    }
+
+    match /users/{userId} {
+      allow read: if (isProfessional() && professionalUserProfile())
+        || (signedIn() && request.auth.uid == userId);
+      allow write: if false;
+    }
+
+    match /patients/{patientId} {
+      allow read: if isProfessional();
+      allow create: if isProfessional()
+        && validPatientData(request.resource.data)
+        && request.resource.data.createdAt == request.time
+        && request.resource.data.updatedAt == request.time
+        && request.resource.data.createdBy == request.auth.uid
+        && request.resource.data.updatedBy == request.auth.uid
+        && !exists(patientIndexPath(request.resource.data.dni))
+        && patientIndexMatchesAfter(request.resource.data.dni, patientId)
+        && freshAuditMatches(
+          request.resource.data.auditLogId,
+          'patient',
+          patientId,
+          'patient_created'
+        );
+      allow update: if isProfessional()
+        && validPatientData(request.resource.data)
+        && request.resource.data.createdAt == resource.data.createdAt
+        && request.resource.data.createdBy == resource.data.createdBy
+        && request.resource.data.updatedAt == request.time
+        && request.resource.data.updatedBy == request.auth.uid
+        && patientIndexMatchesAfter(request.resource.data.dni, patientId)
+        && (
+          request.resource.data.dni == resource.data.dni
+          || !existsAfter(patientIndexPath(resource.data.dni))
+        )
+        && freshAuditMatches(
+          request.resource.data.auditLogId,
+          'patient',
+          patientId,
+          'patient_updated'
+        );
+      allow delete: if false;
+    }
+
+    match /patientDniIndex/{dni} {
+      allow get: if isProfessional();
+      allow list: if false;
+      allow create: if isProfessional()
+        && dni.matches('^[0-9]{7,8}$')
+        && request.resource.data.keys().hasOnly([
+          'patientId',
+          'dni',
+          'createdAt',
+          'createdBy'
+        ])
+        && request.resource.data.patientId is string
+        && request.resource.data.dni == dni
+        && request.resource.data.createdAt == request.time
+        && request.resource.data.createdBy == request.auth.uid
+        && existsAfter(/databases/$(database)/documents/patients/$(request.resource.data.patientId))
+        && getAfter(/databases/$(database)/documents/patients/$(request.resource.data.patientId)).data.dni == dni;
+      allow delete: if isProfessional()
+        && resource.data.dni == dni
+        && existsAfter(/databases/$(database)/documents/patients/$(resource.data.patientId))
+        && getAfter(/databases/$(database)/documents/patients/$(resource.data.patientId)).data.dni != dni
+        && getAfter(/databases/$(database)/documents/patients/$(resource.data.patientId)).data.updatedBy == request.auth.uid;
+      allow update: if false;
+    }
+
+    match /auditLogs/{logId} {
+      allow read: if isAdmin();
+      allow create: if isProfessional()
+        && request.resource.data.entity is string
+        && (
+          request.resource.data.entity == 'patient'
+            ? validAuditLog(logId)
+            : request.resource.data.entity == 'appointment'
+              ? validAppointmentAuditLog(logId)
+              : request.resource.data.entity in [
+                'medicalRecord',
+                'consultation',
+                'treatment',
+                'treatmentEvolution'
+              ]
+                ? validClinicalAuditLog(logId)
+                : request.resource.data.entity == 'referral'
+                  ? validReferralAuditLog(logId)
+                  : request.resource.data.entity in ['budget', 'payment']
+                    ? validFinancialAuditLog(logId)
+                    : request.resource.data.entity == 'patientFile'
+                      ? validPatientFileAuditLog(logId)
+                      : false
+        );
+      allow update, delete: if false;
+    }
+
+    match /appointments/{appointmentId} {
+      allow read: if isProfessional();
+      allow create: if isProfessional()
+        && validAppointmentData()
+        && validNewAppointmentWindow(request.resource.data)
+        && request.resource.data.professionalUid is string
+        && profileMatches(
+          request.resource.data.professionalUid,
+          request.resource.data.dentistId
+        )
+        && request.resource.data.status == 'pending'
+        && request.resource.data.createdAt == request.time
+        && request.resource.data.createdBy == request.auth.uid
+        && freshAuditId(request.resource.data.auditLogId)
+        && validAppointmentReservations(appointmentId, request.resource.data);
+      allow update: if isProfessional()
+        && resource.data.status in ['pending', 'confirmed']
+        && (
+          (
+            request.resource.data.status == 'cancelled'
+            && appointmentCoreUnchanged()
+            && validAppointmentUpdateMetadata()
+            && freshAuditId(request.resource.data.auditLogId)
+            && appointmentReservationsRemoved(
+              request.resource.data
+            )
+          )
+          || (
+            request.resource.data.status in ['pending', 'confirmed']
+            && (
+              (
+                request.resource.data.status == 'confirmed'
+                && resource.data.status == 'pending'
+                && appointmentCoreUnchanged()
+                && validAppointmentUpdateMetadata()
+                && freshAuditId(request.resource.data.auditLogId)
+              )
+              || (
+                request.resource.data.status == resource.data.status
+                && validAppointmentData()
+                && request.resource.data.professionalUid is string
+                && profileMatches(
+                  request.resource.data.professionalUid,
+                  request.resource.data.dentistId
+                )
+                && request.resource.data.createdAt == resource.data.createdAt
+                && request.resource.data.createdBy == resource.data.createdBy
+                && (
+                  appointmentBookingUnchanged()
+                  || (
+                    validNewAppointmentWindow(request.resource.data)
+                    && validAppointmentReservations(
+                      appointmentId,
+                      request.resource.data
+                    )
+                  )
+                )
+                && freshAuditId(request.resource.data.auditLogId)
+              )
+            )
+          )
+        );
+      allow delete: if false;
+    }
+
+    match /referrals/{referralId} {
+      allow read: if isProfessional()
+        && resource.data.clinicId == 'centro-odontologico-colon';
+      allow create: if isProfessional()
+        && validReferralData()
+        && freshAuditMatches(
+          request.resource.data.auditLogId,
+          'referral',
+          referralId,
+          'referral_created'
+        );
+      allow update: if isProfessional()
+        && resource.data.clinicId == 'centro-odontologico-colon'
+        && resource.data.status == 'pending'
+        && request.resource.data.diff(resource.data).affectedKeys().hasOnly([
+          'status',
+          'updatedAt',
+          'updatedBy',
+          'auditLogId'
+        ])
+        && request.resource.data.status in ['accepted', 'rejected']
+        && request.resource.data.updatedAt == request.time
+        && request.resource.data.updatedBy == request.auth.uid
+        && freshAuditMatches(
+          request.resource.data.auditLogId,
+          'referral',
+          referralId,
+          request.resource.data.status == 'accepted'
+            ? 'referral_accepted'
+            : 'referral_rejected'
+        );
+      allow delete: if false;
+    }
+
+    match /budgets/{budgetId} {
+      allow read: if isProfessional()
+        && resource.data.clinicId == 'centro-odontologico-colon';
+      allow create: if isProfessional()
+        && validBudgetData(budgetId)
+        && request.resource.data.status == 'pending'
+        && request.resource.data.createdAt == request.time
+        && request.resource.data.createdBy == request.auth.uid
+        && freshAuditMatches(
+          request.resource.data.auditLogId,
+          'budget',
+          budgetId,
+          'budget_created'
+        );
+      allow update: if isProfessional()
+        && validBudgetData(budgetId)
+        && resource.data.status == 'pending'
+        && request.resource.data.status in ['accepted', 'rejected']
+        && request.resource.data.createdAt == resource.data.createdAt
+        && request.resource.data.createdBy == resource.data.createdBy
+        && request.resource.data.diff(resource.data).affectedKeys().hasOnly([
+          'status',
+          'auditLogId',
+          'updatedAt',
+          'updatedBy'
+        ])
+        && freshAuditMatches(
+          request.resource.data.auditLogId,
+          'budget',
+          budgetId,
+          request.resource.data.status == 'accepted'
+            ? 'budget_accepted'
+            : 'budget_rejected'
+        );
+      allow delete: if false;
+    }
+
+    match /budgetItems/{itemId} {
+      allow read: if isProfessional()
+        && resource.data.clinicId == 'centro-odontologico-colon';
+      allow create: if isProfessional() && validBudgetItemData(itemId);
+      allow update: if isProfessional()
+        && resource.data.clinicId == 'centro-odontologico-colon'
+        && validBudgetItemPaymentUpdate(itemId)
+        && freshAuditMatches(
+          request.resource.data.auditLogId,
+          'payment',
+          request.resource.data.lastPaymentId,
+          'payment_created'
+        );
+      allow delete: if false;
+    }
+
+    match /payments/{paymentId} {
+      allow read: if isProfessional()
+        && resource.data.clinicId == 'centro-odontologico-colon';
+      allow create: if isProfessional()
+        && request.resource.data.keys().hasOnly([
+          'clinicId',
+          'patientId',
+          'budgetId',
+          'budgetItemId',
+          'amountCents',
+          'method',
+          'paidAt',
+          'createdAt',
+          'createdBy',
+          'auditLogId'
+        ])
+        && request.resource.data.keys().hasAll([
+          'clinicId',
+          'patientId',
+          'budgetId',
+          'budgetItemId',
+          'amountCents',
+          'method',
+          'paidAt',
+          'createdAt',
+          'createdBy',
+          'auditLogId'
+        ])
+        && request.resource.data.clinicId == 'centro-odontologico-colon'
+        && exists(/databases/$(database)/documents/patients/$(request.resource.data.patientId))
+        && request.resource.data.budgetId is string
+        && request.resource.data.budgetItemId is string
+        && request.resource.data.amountCents is int
+        && request.resource.data.amountCents > 0
+        && request.resource.data.amountCents <= 9000000000000
+        && request.resource.data.method in [
+          'cash',
+          'debit_card',
+          'credit_card',
+          'transfer',
+          'other'
+        ]
+        && request.resource.data.paidAt == request.time
+        && request.resource.data.createdAt == request.time
+        && request.resource.data.createdBy == request.auth.uid
+        && freshAuditMatches(
+          request.resource.data.auditLogId,
+          'payment',
+          paymentId,
+          'payment_created'
+        );
+      allow update, delete: if false;
+    }
+
+    match /patientFiles/{fileId} {
+      allow read: if isProfessional()
+        && resource.data.clinicId == 'centro-odontologico-colon';
+      allow create: if isProfessional()
+        && validPatientFileData(fileId)
+        && freshAuditMatches(
+          request.resource.data.auditLogId,
+          'patientFile',
+          fileId,
+          'patient_file_upload_started'
+        );
+      allow update: if isProfessional()
+        && resource.data.clinicId == 'centro-odontologico-colon'
+        && request.resource.data.diff(resource.data).affectedKeys().hasOnly([
+          'status',
+          'updatedAt',
+          'updatedBy',
+          'auditLogId'
+        ])
+        && request.resource.data.updatedAt == request.time
+        && request.resource.data.updatedBy == request.auth.uid
+        && (
+          (
+            resource.data.status == 'uploading'
+            && request.resource.data.status == 'active'
+            && freshAuditMatches(
+              request.resource.data.auditLogId,
+              'patientFile',
+              fileId,
+              'patient_file_uploaded'
+            )
+          )
+          || (
+            resource.data.status == 'active'
+            && request.resource.data.status == 'deleting'
+            && freshAuditMatches(
+              request.resource.data.auditLogId,
+              'patientFile',
+              fileId,
+              'patient_file_delete_requested'
+            )
+          )
+          || (
+            resource.data.status == 'uploading'
+            && request.resource.data.status == 'deleting'
+            && freshAuditMatches(
+              request.resource.data.auditLogId,
+              'patientFile',
+              fileId,
+              'patient_file_upload_cleanup_requested'
+            )
+          )
+          || (
+            resource.data.status == 'deleting'
+            && request.resource.data.status == 'deleted'
+            && freshAuditMatches(
+              request.resource.data.auditLogId,
+              'patientFile',
+              fileId,
+              'patient_file_deleted'
+            )
+          )
+        );
+      allow delete: if false;
+    }
+
+    match /scheduleBlocks/{blockId} {
+      allow read: if isProfessional();
+      allow create: if isAdmin()
+        && validScheduleBlock(blockId, request.resource.data.dentistId);
+      allow delete: if isAdmin();
+      allow update: if false;
+    }
+
+    match /appointmentReservations/{slotId} {
+      allow get: if isProfessional();
+      allow list: if false;
+      allow create: if isProfessional()
+        && (
+          request.resource.data.ownerType == 'appointment'
+            ? validAppointmentReservation(slotId)
+            : request.resource.data.ownerType == 'block'
+              ? validBlockReservation(slotId)
+              : false
+        );
+      allow delete: if isProfessional()
+        && (
+          (
+            resource.data.ownerType == 'appointment'
+            && existsAfter(appointmentPath(resource.data.ownerId))
+            && (
+              getAfter(appointmentPath(resource.data.ownerId)).data.status
+                == 'cancelled'
+              || !getAfter(appointmentPath(resource.data.ownerId)).data.slotIds
+                .hasAny([slotId])
+            )
+          )
+          || (
+            resource.data.ownerType == 'block'
+            && !existsAfter(scheduleBlockPath(resource.data.ownerId))
+          )
+        );
+      allow update: if false;
+    }
+
+    match /medicalRecords/{patientId} {
+      allow read: if isProfessional()
+        && exists(/databases/$(database)/documents/patients/$(patientId));
+      allow create: if isProfessional()
+        && validMedicalRecord(patientId)
+        && request.resource.data.createdAt == request.time
+        && request.resource.data.createdBy == request.auth.uid
+        && freshAuditMatches(
+          request.resource.data.auditLogId,
+          'medicalRecord',
+          patientId,
+          'history_created'
+        );
+      allow update: if isProfessional()
+        && validMedicalRecord(patientId)
+        && request.resource.data.createdAt == resource.data.createdAt
+        && request.resource.data.createdBy == resource.data.createdBy
+        && request.resource.data.diff(resource.data).affectedKeys().hasOnly([
+          'medicalHistory',
+          'auditLogId',
+          'updatedAt',
+          'updatedBy'
+        ])
+        && freshAuditMatches(
+          request.resource.data.auditLogId,
+          'medicalRecord',
+          patientId + '/historyRevisions/' + request.resource.data.auditLogId,
+          'history_updated'
+        )
+        && medicalHistoryRevisionAfter(
+          patientId,
+          request.resource.data.auditLogId,
+          resource.data.medicalHistory
+        );
+      allow delete: if false;
+
+      match /historyRevisions/{revisionId} {
+        allow read: if isProfessional();
+        allow create: if isProfessional()
+          && request.resource.data.keys().hasOnly([
+            'patientId',
+            'medicalHistory',
+            'createdAt',
+            'createdBy',
+            'auditLogId'
+          ])
+          && request.resource.data.keys().hasAll([
+            'patientId',
+            'medicalHistory',
+            'createdAt',
+            'createdBy',
+            'auditLogId'
+          ])
+          && request.resource.data.patientId == patientId
+          && revisionId == request.resource.data.auditLogId
+          && validMedicalHistory(request.resource.data.medicalHistory)
+          && request.resource.data.createdAt == request.time
+          && request.resource.data.createdBy == request.auth.uid
+          && request.resource.data.auditLogId is string
+          && exists(/databases/$(database)/documents/medicalRecords/$(patientId))
+          && request.resource.data.medicalHistory
+            == get(/databases/$(database)/documents/medicalRecords/$(patientId)).data.medicalHistory
+          && freshAuditMatches(
+            request.resource.data.auditLogId,
+            'medicalRecord',
+            patientId + '/historyRevisions/' + revisionId,
+            'history_updated'
+          );
+        allow update, delete: if false;
+      }
+
+      match /consultations/{consultationId} {
+        allow read: if isProfessional();
+        allow create: if isProfessional()
+          && validConsultation(patientId, consultationId)
+          && request.resource.data.createdAt == request.time
+          && request.resource.data.createdBy == request.auth.uid
+          && request.resource.data.professionalUid == request.auth.uid
+          && freshAuditMatches(
+            request.resource.data.auditLogId,
+            'consultation',
+            patientId + '/consultations/' + consultationId,
+            'consultation_created'
+          );
+        allow update: if isProfessional()
+          && validConsultation(patientId, consultationId)
+          && request.resource.data.createdAt == resource.data.createdAt
+          && request.resource.data.createdBy == resource.data.createdBy
+          && request.resource.data.diff(resource.data).affectedKeys().hasOnly([
+            'professionalUid',
+            'consultationDate',
+            'reason',
+            'diagnosis',
+            'clinicalNotes',
+            'treatmentIndicated',
+            'treatmentPerformed',
+            'recommendations',
+            'nextControl',
+            'updatedAt',
+            'updatedBy',
+            'auditLogId'
+          ])
+          && request.resource.data.appointmentId == resource.data.appointmentId
+          && request.resource.data.professionalUid == resource.data.professionalUid
+          && freshAuditMatches(
+            request.resource.data.auditLogId,
+            'consultation',
+            patientId + '/consultations/' + consultationId,
+            'consultation_updated'
+          )
+          && consultationRevisionAfter(
+            patientId,
+            consultationId,
+            request.resource.data.auditLogId,
+            resource.data
+          );
+        allow delete: if false;
+
+        match /revisions/{revisionId} {
+          allow read: if isProfessional();
+          allow create: if isProfessional()
+            && revisionId == request.resource.data.auditLogId
+            && request.resource.data.keys().hasOnly([
+              'patientId',
+              'consultation',
+              'createdAt',
+              'createdBy',
+              'auditLogId'
+            ])
+            && request.resource.data.keys().hasAll([
+              'patientId',
+              'consultation',
+              'createdAt',
+              'createdBy',
+              'auditLogId'
+            ])
+            && request.resource.data.patientId == patientId
+            && request.resource.data.consultation == get(
+              /databases/$(database)/documents/medicalRecords/$(patientId)/consultations/$(consultationId)
+            ).data
+            && request.resource.data.createdAt == request.time
+            && request.resource.data.createdBy == request.auth.uid
+            && freshAuditMatches(
+              request.resource.data.auditLogId,
+              'consultation',
+              patientId + '/consultations/' + consultationId,
+              'consultation_updated'
+            );
+          allow update, delete: if false;
+        }
+      }
+
+      match /treatments/{treatmentId} {
+        allow read: if isProfessional();
+        allow create: if isProfessional()
+          && validTreatment(patientId)
+          && request.resource.data.status == 'planned'
+          && request.resource.data.createdAt == request.time
+          && request.resource.data.createdBy == request.auth.uid
+          && request.resource.data.professionalUid == request.auth.uid
+          && freshAuditMatches(
+            request.resource.data.auditLogId,
+            'treatment',
+            patientId + '/treatments/' + treatmentId,
+            'treatment_created'
+          );
+        allow update: if isProfessional()
+          && validTreatment(patientId)
+          && request.resource.data.createdAt == resource.data.createdAt
+          && request.resource.data.createdBy == resource.data.createdBy
+          && request.resource.data.professionalUid == resource.data.professionalUid
+          && (
+            (
+              request.resource.data.name == resource.data.name
+              && request.resource.data.planDescription == resource.data.planDescription
+              && request.resource.data.diff(resource.data).affectedKeys().hasOnly([
+                'status',
+                'auditLogId',
+                'updatedAt',
+                'updatedBy'
+              ])
+              && request.resource.data.status in [
+                'planned',
+                'in_progress',
+                'completed',
+                'cancelled'
+              ]
+              && treatmentEvolutionAuditMatches(
+                request.resource.data.auditLogId,
+                patientId,
+                treatmentId
+              )
+              && treatmentRevisionAfter(
+                patientId,
+                treatmentId,
+                request.resource.data.auditLogId,
+                resource.data
+              )
+            )
+            || (
+              request.resource.data.status == resource.data.status
+              && request.resource.data.diff(resource.data).affectedKeys().hasOnly([
+                'name',
+                'planDescription',
+                'auditLogId',
+                'updatedAt',
+                'updatedBy'
+              ])
+              && freshAuditMatches(
+                request.resource.data.auditLogId,
+                'treatment',
+                patientId + '/treatments/' + treatmentId,
+                'treatment_updated'
+              )
+              && treatmentRevisionAfter(
+                patientId,
+                treatmentId,
+                request.resource.data.auditLogId,
+                resource.data
+              )
+            )
+          );
+        allow delete: if false;
+
+        match /revisions/{revisionId} {
+          allow read: if isProfessional();
+          allow create: if isProfessional()
+            && revisionId == request.resource.data.auditLogId
+            && request.resource.data.keys().hasOnly([
+              'patientId',
+              'treatment',
+              'createdAt',
+              'createdBy',
+              'auditLogId'
+            ])
+            && request.resource.data.keys().hasAll([
+              'patientId',
+              'treatment',
+              'createdAt',
+              'createdBy',
+              'auditLogId'
+            ])
+            && request.resource.data.patientId == patientId
+            && request.resource.data.treatment == get(
+              /databases/$(database)/documents/medicalRecords/$(patientId)/treatments/$(treatmentId)
+            ).data
+            && request.resource.data.createdAt == request.time
+            && request.resource.data.createdBy == request.auth.uid
+            && (
+              freshAuditMatches(
+                request.resource.data.auditLogId,
+                'treatment',
+                patientId + '/treatments/' + treatmentId,
+                'treatment_updated'
+              )
+              || treatmentEvolutionAuditMatches(
+                request.resource.data.auditLogId,
+                patientId,
+                treatmentId
+              )
+            );
+          allow update, delete: if false;
+        }
+
+        match /evolutions/{evolutionId} {
+          allow read: if isProfessional();
+          allow create: if isProfessional()
+            && validTreatmentEvolution(patientId, treatmentId)
+            && request.resource.data.professionalUid == request.auth.uid
+            && treatmentEvolutionAuditMatches(
+              request.resource.data.auditLogId,
+              patientId,
+              treatmentId
+            )
+            && request.resource.data.status
+              == getAfter(/databases/$(database)/documents/medicalRecords/$(patientId)/treatments/$(treatmentId)).data.status;
+          allow update, delete: if false;
+        }
+      }
+    }
+
+    match /schedules/{dentistId} {
+      allow read: if isProfessional();
+      allow create, update: if isAdmin() && validSchedule(dentistId);
+      allow delete: if false;
+    }
+
+    match /{document=**} {
+      allow read, write: if false;
+    }
+  }
+}

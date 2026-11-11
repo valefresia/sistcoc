@@ -1,0 +1,86 @@
+rules_version = '2';
+
+service firebase.storage {
+  match /b/{bucket}/o {
+    function currentProfessional() {
+      let profile = firestore.get(
+        /databases/(default)/documents/users/$(request.auth.uid)
+      );
+      return request.auth != null
+        && profile.data.uid == request.auth.uid
+        && profile.data.role == request.auth.token.role
+        && profile.data.dentistId == request.auth.token.dentistId
+        && request.auth.token.role in ['admin', 'dentist']
+        && request.auth.token.dentistId in [
+          'blas-fresia',
+          'pamela-moreira',
+          'marcela-castro'
+        ];
+    }
+
+    function validFileExtension(extension) {
+      return extension in ['pdf', 'jpg', 'jpeg', 'png', 'stl', 'ply', 'obj', 'glb'];
+    }
+
+    function validPatient(patientId) {
+      return firestore.exists(
+        /databases/(default)/documents/patients/$(patientId)
+      );
+    }
+
+    function fileMetadata(fileId) {
+      return firestore.get(
+        /databases/(default)/documents/patientFiles/$(fileId)
+      );
+    }
+
+    function validFileType(extension, contentType) {
+      return (
+        (extension == 'pdf' && contentType == 'application/pdf')
+        || (extension in ['jpg', 'jpeg'] && contentType == 'image/jpeg')
+        || (extension == 'png' && contentType == 'image/png')
+        || (extension == 'stl' && contentType == 'model/stl')
+        || (extension == 'ply' && contentType == 'application/octet-stream')
+        || (extension == 'obj' && contentType == 'text/plain')
+        || (extension == 'glb' && contentType == 'model/gltf-binary')
+      );
+    }
+
+    match /patient-files/{patientId}/{extension}/{fileId} {
+      allow create: if currentProfessional()
+        && validPatient(patientId)
+        && validFileExtension(extension)
+        && validFileType(extension, request.resource.contentType)
+        && request.resource.size > 0
+        && request.resource.size <= 104857600
+        && request.resource.metadata.fileId == fileId
+        && request.resource.metadata.patientId == patientId
+        && request.resource.metadata.clinicId == 'centro-odontologico-colon'
+        && fileMetadata(fileId).data.status == 'uploading'
+        && fileMetadata(fileId).data.patientId == patientId
+        && fileMetadata(fileId).data.extension == extension
+        && fileMetadata(fileId).data.storagePath
+          == 'patient-files/' + patientId + '/' + extension + '/' + fileId
+        && fileMetadata(fileId).data.contentType == request.resource.contentType
+        && fileMetadata(fileId).data.sizeBytes == request.resource.size;
+      allow get: if currentProfessional()
+        && validPatient(patientId)
+        && validFileExtension(extension)
+        && fileMetadata(fileId).data.patientId == patientId
+        && fileMetadata(fileId).data.extension == extension
+        && fileMetadata(fileId).data.storagePath
+          == 'patient-files/' + patientId + '/' + extension + '/' + fileId
+        && fileMetadata(fileId).data.status == 'active';
+      allow delete: if currentProfessional()
+        && validPatient(patientId)
+        && validFileExtension(extension)
+        && fileMetadata(fileId).data.patientId == patientId
+        && fileMetadata(fileId).data.status == 'deleting';
+      allow list, update: if false;
+    }
+
+    match /{allPaths=**} {
+      allow read, write: if false;
+    }
+  }
+}
