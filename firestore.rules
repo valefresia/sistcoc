@@ -470,7 +470,7 @@ service cloud.firestore {
 
     function timestampMatchesLocalMinute(timestampValue, dateValue, minuteValue) {
       let parts = dateValue.split('-');
-      let localTimestamp = timestampValue + duration.value(3, 'h');
+      let localTimestamp = timestampValue - duration.value(3, 'h');
       return minuteValue >= 0
         && minuteValue < 1440
         && parts.size() == 3
