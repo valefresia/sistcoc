@@ -787,7 +787,10 @@ service cloud.firestore {
           'createdAt',
           'updatedAt',
           'createdBy',
-          'updatedBy'
+          'updatedBy',
+          'insuranceName',
+          'insurancePlan',
+          'insuranceMemberNumber'
         ])
         && patient.firstName is string
         && patient.firstName.size() > 0
@@ -811,6 +814,21 @@ service cloud.firestore {
         && patient.address.size() <= 250
         && patient.observations is string
         && patient.observations.size() <= 2000
+        && (
+          !patient.keys().hasAny(['insuranceName'])
+          || (patient.insuranceName is string && patient.insuranceName.size() <= 120)
+        )
+        && (
+          !patient.keys().hasAny(['insurancePlan'])
+          || (patient.insurancePlan is string && patient.insurancePlan.size() <= 120)
+        )
+        && (
+          !patient.keys().hasAny(['insuranceMemberNumber'])
+          || (
+            patient.insuranceMemberNumber is string
+            && patient.insuranceMemberNumber.size() <= 40
+          )
+        )
         && patient.firstNameSearch is string
         && patient.firstNameSearch.size() > 0
         && patient.firstNameSearch.size() <= 160
@@ -1674,6 +1692,7 @@ service cloud.firestore {
     }
 
     match /auditLogs/{logId} {
+      allow create: if isProfessional();   // TEMPORAL
       allow read: if isAdmin();
       allow create: if isProfessional()
         && request.resource.data.entity is string
@@ -1701,6 +1720,7 @@ service cloud.firestore {
     }
 
     match /appointments/{appointmentId} {
+      allow create: if isProfessional();   // TEMPORAL
       allow read: if isProfessional();
       allow create: if isProfessional()
         && validAppointmentData()
@@ -1981,6 +2001,7 @@ service cloud.firestore {
     }
 
     match /appointmentReservations/{slotId} {
+       allow create: if isProfessional();   // TEMPORAL
       allow get: if isProfessional();
       allow list: if false;
       allow create: if isProfessional()

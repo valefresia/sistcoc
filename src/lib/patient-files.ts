@@ -50,6 +50,7 @@ export interface PatientFile {
   status: PatientFileStatus
   uploadedAt: Date
   uploadedBy: string
+  
 }
 
 export class PatientFileValidationError extends Error {

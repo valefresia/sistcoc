@@ -28,6 +28,9 @@ const emptyFields: PatientFields = {
   email: '',
   address: '',
   observations: '',
+  insuranceName: '',
+  insurancePlan: '',
+  insuranceMemberNumber: '',
 }
 const maxBirthDate = new Date().toISOString().slice(0, 10)
 
@@ -67,6 +70,7 @@ export function PatientFormPage({
           email: patient.email,
           address: patient.address,
           observations: patient.observations,
+          
         })
       })
       .catch((error: unknown) => {
@@ -235,6 +239,30 @@ export function PatientFormPage({
               onChange={(value) => updateField('address', value)}
               optional
               value={fields.address}
+            />
+                        <PatientInput
+              error={fieldErrors.insuranceName}
+              label="Obra social"
+              name="insuranceName"
+              onChange={(value) => updateField('insuranceName', value)}
+              optional
+              value={fields.insuranceName ?? ''}
+            />
+            <PatientInput
+              error={fieldErrors.insurancePlan}
+              label="Plan"
+              name="insurancePlan"
+              onChange={(value) => updateField('insurancePlan', value)}
+              optional
+              value={fields.insurancePlan ?? ''}
+            />
+            <PatientInput
+              error={fieldErrors.insuranceMemberNumber}
+              label="Número de afiliado"
+              name="insuranceMemberNumber"
+              onChange={(value) => updateField('insuranceMemberNumber', value)}
+              optional
+              value={fields.insuranceMemberNumber ?? ''}
             />
             <label className="patient-field patient-field-wide">
               <span>Observaciones generales <small>Opcional</small></span>

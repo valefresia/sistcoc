@@ -121,6 +121,11 @@ export function PatientDetailPage({ patientId }: { patientId: string }) {
                 <DetailItem label="Teléfono" value={patient.phone} />
                 <DetailItem label="Correo electrónico" value={patient.email || 'No informado'} />
                 <DetailItem label="Dirección" value={patient.address || 'No informada'} />
+                <DetailItem label="Dirección" value={patient.address || 'No informada'} />
+                <DetailItem label="Obra social" value={patient.insuranceName || 'No informada'} />
+                <DetailItem label="Plan" value={patient.insurancePlan || 'No informado'} />
+                <DetailItem label="Número de afiliado" value={patient.insuranceMemberNumber || 'No informado'} />
+                <DetailItem label="Fecha de registro" value={formatPatientDate(patient.createdAt)} />
                 <DetailItem label="Fecha de registro" value={formatPatientDate(patient.createdAt)} />
                 <div className="patient-detail-item patient-detail-observations">
                   <span>Observaciones generales</span>

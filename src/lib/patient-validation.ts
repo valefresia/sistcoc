@@ -7,6 +7,9 @@ export interface PatientFields {
   email: string
   address: string
   observations: string
+  insuranceName?: string
+  insurancePlan?: string
+  insuranceMemberNumber?: string
 }
 
 export type PatientFieldErrors = Partial<Record<keyof PatientFields, string>>
@@ -16,8 +19,7 @@ export function normalizeDni(value: string) {
 }
 
 export function preparePatientFields(input: PatientFields) {
-  const value: PatientFields = {
-    firstName: input.firstName.trim().replace(/\s+/g, ' '),
+  const value: Required<PatientFields> = {    firstName: input.firstName.trim().replace(/\s+/g, ' '),
     lastName: input.lastName.trim().replace(/\s+/g, ' '),
     dni: normalizeDni(input.dni),
     birthDate: input.birthDate,
@@ -25,6 +27,9 @@ export function preparePatientFields(input: PatientFields) {
     email: input.email.trim().toLocaleLowerCase('es-AR'),
     address: input.address.trim(),
     observations: input.observations.trim(),
+    insuranceName: (input.insuranceName ?? '').trim().replace(/\s+/g, ' '),
+    insurancePlan: (input.insurancePlan ?? '').trim().replace(/\s+/g, ' '),
+    insuranceMemberNumber: (input.insuranceMemberNumber ?? '').trim(),
   }
   const errors: PatientFieldErrors = {}
   const now = new Date()
@@ -71,6 +76,20 @@ export function preparePatientFields(input: PatientFields) {
   if (value.address.length > 250) errors.address = 'La dirección no puede superar 250 caracteres.'
   if (value.observations.length > 2000) {
     errors.observations = 'Las observaciones no pueden superar 2000 caracteres.'
+  }
+
+   if (value.insuranceName.length > 120) {
+    errors.insuranceName = 'La obra social no puede superar 120 caracteres.'
+  }
+  if (value.insurancePlan.length > 120) {
+    errors.insurancePlan = 'El plan no puede superar 120 caracteres.'
+  }
+  if (
+    value.insuranceMemberNumber &&
+    !/^[A-Za-z0-9/ .-]{1,40}$/.test(value.insuranceMemberNumber)
+  ) {
+    errors.insuranceMemberNumber =
+      'Revisá el número de afiliado. Usá hasta 40 letras, números, guiones o barras.'
   }
 
   return {
